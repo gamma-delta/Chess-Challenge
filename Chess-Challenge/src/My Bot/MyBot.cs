@@ -2,15 +2,19 @@
 using System.Linq;
 using System.Collections.Generic;
 using System;
+using static System.Math;
 
 // Basically just sunfish. Conveniently, Sebastian has already written the move *legality*
 // code for us.
+//
+// Thank you to:
+// - https://github.com/thomasahle/sunfish/blob/master/sunfish.py
+// - https://zserge.com/posts/carnatus/
 public class MyBot : IChessBot {
   Action<String> Print = Console.Out.WriteLine;
   
   public Move Think(Board board, Timer timer) {
-    var best = board.GetLegalMoves().MaxBy(move => score(move, board, timer));
-    Print($"Best move: ${best}");
+    var best = board.GetLegalMoves().MaxBy(move => EvaluateMove(move, board));
     return best;
   }
 
@@ -19,7 +23,58 @@ public class MyBot : IChessBot {
   List<int> pst = packedPST.SelectMany(BitConverter.GetBytes).Select(b => b - 127).ToList();
   int[] pieceValues = { 0, 100, 280, 320, 479, 929, 60000 };
 
-  int score(Move move, Board board, Timer timer) {
+  Dictionary<ulong, int> KnownScores = new();
+
+  int EvaluateMove(Move move, Board board) {
+    Print($"Ply {board.PlyCount} : checking {move.GetSAN(board)}");
+    int score = GetProjectedMoveScore(move, board, 1);
+    Print($"  Projected score: {score}");
+    return score;
+  }
+
+  // Projected score *if* I did this
+  int GetProjectedMoveScore(Move move, Board board, int depthLeft) {
+    if (KnownScores.TryGetValue(board.ZobristKey, out int value)) {
+      return value;
+    }
+  
+    int baseScore = pointValue(move, board);
+    int responseScore  = 0;
+
+    if (depthLeft > 0) {
+      Print($"Ply {board.PlyCount}. Checking what my opponent could do.");
+      board.MakeMove(move);
+      Move theirBestMove = Move.NullMove;
+      foreach (var opponentsMove in board.GetLegalMoves()) {
+        // Check from their perspective
+        int thisResponse = GetProjectedMoveScore(opponentsMove, board, depthLeft - 1);
+        // and we always assume they do the best for *them*.
+        if (thisResponse > responseScore) {
+          responseScore = thisResponse;
+          theirBestMove = opponentsMove;
+        }
+      }
+      board.UndoMove(move);
+      Print($"Ply {board.PlyCount}. The opponent might get {responseScore} by {theirBestMove}");
+    }
+      
+    int score = baseScore - responseScore;
+    if (KnownScores.TryGetValue(board.ZobristKey, out int value2)) {
+      if (score > value) {
+        KnownScores[board.ZobristKey] = score;
+      }
+    }
+    return score;
+  }
+
+  // Evaluate how good this would be for the current player.
+  int pointValue(Move move, Board board) {
+    bool checkmate;
+    board.MakeMove(move); checkmate = board.IsInCheckmate(); board.UndoMove(move);
+    if (checkmate) {
+      return 99999999;
+    }
+  
     // Sunfish has the white pieces in uppercase.
     int start = move.StartSquare.Index, end = move.TargetSquare.Index;
     PieceType me = move.MovePieceType;
@@ -28,8 +83,8 @@ public class MyBot : IChessBot {
     // So we need to do some reversing maybe.
     int pstLookup(PieceType ty, int square) => pst[(int)(ty-1) * 64 +
       (board.IsWhiteToMove
-        ? square
-        : 64 - square)];
+        ? 64 - square
+        : square)];
 
     // How many points we lose by leaving
     int score = -pstLookup(move.MovePieceType, start);
@@ -47,12 +102,11 @@ public class MyBot : IChessBot {
     if (move.IsCastles)
       score += 
         -pstLookup(PieceType.Rook, start + (kingside ? 3 : -4)) // Score lost by leaving here
-        + pstLookup(PieceType.Rook, end + (kingside ? -1 : 1)); // and gained by going there.
+        + pstLookup(PieceType.Rook, end + (kingside ? -1 : 1)) // and gained by going there.
+        + 200; // it's like card advantage, doing More Things is always better
 
-    Print($"  {move.GetSAN(board)} : {score}");
     return score;
-   }
-
+  }
     
   static ulong[] packedPST = {
     // P
