@@ -6,8 +6,13 @@ using System;
 // Basically just sunfish. Conveniently, Sebastian has already written the move *legality*
 // code for us.
 public class MyBot : IChessBot {
-  public Move Think(Board board, Timer timer) =>
-    board.GetLegalMoves().MaxBy(move => score(move, board, timer));
+  Action<String> Print = Console.Out.WriteLine;
+  
+  public Move Think(Board board, Timer timer) {
+    var best = board.GetLegalMoves().MaxBy(move => score(move, board, timer));
+    Print($"Best move: ${best}");
+    return best;
+  }
 
   // Unpack the enormous table down below into bytes.
   // I stored them as their values + 127 so as to not deal with signing, so get their values back:
@@ -44,7 +49,7 @@ public class MyBot : IChessBot {
         -pstLookup(PieceType.Rook, start + (kingside ? 3 : -4)) // Score lost by leaving here
         + pstLookup(PieceType.Rook, end + (kingside ? -1 : 1)); // and gained by going there.
 
-    Console.Out.WriteLine("{0} : {1}", move, score);
+    Print($"  {move.GetSAN(board)} : {score}");
     return score;
    }
 
