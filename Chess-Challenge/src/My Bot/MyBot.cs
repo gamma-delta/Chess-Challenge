@@ -88,7 +88,7 @@ public class MyBot : IChessBot {
     Move decision = Move.NullMove;
     int bestScore = -infinity;
     foreach (var move in board.GetLegalMoves()) {
-      int score = negaMax(board, move, 0, 0);
+      int score = alphaBeta(board, move, 0, 0, infinity, -infinity);
       if (score > bestScore) {
         bestScore = score;
         decision = move;
@@ -100,45 +100,15 @@ public class MyBot : IChessBot {
   static Dictionary<ulong, int> KnownScores = new();
 
   // B/c my point algorithm returns *deltas*, not points, we need to keep a running accumulator
-  // of the overall change
-  int negaMax(Board board, Move move, int depth, int overallDelta) {
-    board.MakeMove(move);
-    ulong projectedZobrist = board.ZobristKey;
-    board.UndoMove(move);
-  
-    if (KnownScores.TryGetValue(projectedZobrist, out int known))
-      return known;
-    
-    int inherentScore = deltaPoints(move, board);
-    if (depth >= maxDepth)
-      return overallDelta + inherentScore;
-
-    // Check out what the opponent might do in response.
-    // We want to minimize their best response.
-    int theirBestGains = -infinity;
-    PrintIndent(depth, $"Determining score for {move.GetSAN(board)}, ply {board.PlyCount}, acc {overallDelta}");
-    PrintIndent(depth, $"Off the top of my head that's {inherentScore}");
-    board.MakeMove(move);
-    foreach (var theirResponse in board.GetLegalMoves()) {
-      PrintIndent(depth, $"> Checking their best score if they did {theirResponse.GetSAN(board)} ...");
-      // Because this is called recursively, we can assume by induction that
-      // this is their best possible case.
-      int theirScoreIfTheyDidThat = negaMax(board, theirResponse, depth + 1, overallDelta);
-      PrintIndent(depth, $"> The best they could do is {theirScoreIfTheyDidThat}");
-      if (theirScoreIfTheyDidThat > theirBestGains) {
-        // Sweet
-        PrintIndent(depth, $"> That's better than their previous best {theirBestGains} so they'll probably do it");
-        theirBestGains = theirScoreIfTheyDidThat;
-      }
+  // of the overall change.
+  (Move, int) alphaBeta(Board board, Move move, int depth, int overallDelta, int alpha, int beta, bool maximuze) {
+    int inherentValue = deltaPoints(move, board);
+    if (depth <= 0 || board.IsInCheckmate()) {
+      return (Move.NullMove, inherentValue);
     }
-
-    board.UndoMove(move);
-    // and my score is the inverse of theirs.
-    int outScore = inherentScore + overallDelta - theirBestGains;
-    PrintIndent(depth, $"From this they can get {theirBestGains} max so my score is {outScore}.");
-
-    KnownScores[projectedZobrist] = outScore;
-    return outScore;
+    
+    int bestValue = -infinity;
+    
   }
 
   // Evaluate how good this would be for the current player.
