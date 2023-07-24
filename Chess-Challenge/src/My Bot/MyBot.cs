@@ -11,108 +11,8 @@ using static System.Math;
 // - https://github.com/thomasahle/sunfish/blob/master/sunfish.py
 // - https://zserge.com/posts/carnatus/
 public class MyBot : IChessBot {
-  // Action<String> Print = Console.Out.WriteLine;
-  Action<String> Print = (_) => {};
-  
-  public Move Think(Board board, Timer timer) {
-    var best = board.GetLegalMoves().MaxBy(move => EvaluateMove(move, board));
-    return best;
-  }
-
-  // Unpack the enormous table down below into bytes.
-  // I stored them as their values + 127 so as to not deal with signing, so get their values back:
-  List<int> pst = packedPST.SelectMany(BitConverter.GetBytes).Select(b => b - 127).ToList();
-  int[] pieceValues = { 0, 100, 280, 320, 479, 929, 60000 };
-
-  Dictionary<ulong, int> KnownScores = new();
-
-  int EvaluateMove(Move move, Board board) {
-    Print($"Ply {board.PlyCount} : checking {move.GetSAN(board)}");
-    int score = GetProjectedMoveScore(move, board, 3, -999999999, 999999999);
-    Print($"  Projected score: {score}");
-    return score;
-  }
-
-  // Projected score *if* I did this
-  int GetProjectedMoveScore(Move move, Board board, int depthLeft, int myWorst, int theirBest) {
-    if (KnownScores.TryGetValue(board.ZobristKey, out int value)) {
-      return value;
-    }
-  
-    int baseScore = pointValue(move, board);
-
-    if (depthLeft > 0) {
-      Print($"Ply {board.PlyCount}. Attempting {move.GetSAN(board)}. Off the top of my head this is worth {baseScore} Checking what my opponent could do.");
-      board.MakeMove(move);
-      Move theirBestMove = Move.NullMove;
-      foreach (var opponentsMove in board.GetLegalMoves()) {
-        // Check from their perspective
-        int thisResponse = GetProjectedMoveScore(opponentsMove, board, depthLeft - 1, -theirBest, -myWorst);
-        if (thisResponse < theirBest) {
-          // They'd never ever search down here
-          break;
-        }
-        // and we always assume they do the best for *them*.
-        if (thisResponse > theirBest) {
-          theirBest = thisResponse;
-          theirBestMove = opponentsMove;
-        }
-      }
-      Print($"Ply {board.PlyCount}. The opponent might get {theirBest} by {theirBestMove.GetSAN(board)}");
-      board.UndoMove(move);
-    }
-      
-    int score = baseScore - theirBest;
-    if (KnownScores.TryGetValue(board.ZobristKey, out int value2)) {
-      if (score > value) {
-        KnownScores[board.ZobristKey] = score;
-      }
-    }
-    return score;
-  }
-
-  // Evaluate how good this would be for the current player.
-  int pointValue(Move move, Board board) {
-    bool checkmate;
-    board.MakeMove(move); checkmate = board.IsInCheckmate(); board.UndoMove(move);
-    if (checkmate) {
-      return 99999999;
-    }
-  
-    // Sunfish has the white pieces in uppercase.
-    int start = move.StartSquare.Index, end = move.TargetSquare.Index;
-    PieceType me = move.MovePieceType;
-
-    // The LUT always has *you* at the bottom, but Seb's has *white* at the bottom.
-    // So we need to do some reversing maybe.
-    int pstLookup(PieceType ty, int square) => pst[(int)(ty-1) * 64 +
-      (board.IsWhiteToMove
-        ? 63 - square
-        : square)];
-
-    // How many points we lose by leaving
-    int score = -pstLookup(move.MovePieceType, start);
-    // How many points we score by capturing that
-    score += pieceValues[(int)move.CapturePieceType];
-
-    // If we're not promoting, how many points we score at the target
-    if (move.PromotionPieceType == PieceType.None)
-      score += pstLookup(move.MovePieceType, end);
-    else // Otherwise, how many points we score as a *queen*
-      score += pstLookup(move.PromotionPieceType, end);
-
-    // Account for points scored by moving the rook
-    bool kingside = end > start;
-    if (move.IsCastles)
-      score += 
-        -pstLookup(PieceType.Rook, start + (kingside ? 3 : -4)) // Score lost by leaving here
-        + pstLookup(PieceType.Rook, end + (kingside ? -1 : 1)) // and gained by going there.
-        + 200; // it's like card advantage, doing More Things is always better
-
-    return score;
-  }
-    
-  static ulong[] packedPST = {
+  // Sorry.
+  static ulong[] PackedPST = {
     // P
     0x7f7f7f7f7f7f7f7f,
     0xcdd2d5c8e5d1d4d9,
@@ -168,4 +68,117 @@ public class MyBot : IChessBot {
     0x7b82714d466d8c83,
     0x909d7c71857ea791,
   };
+
+  // Unpack the enormous table down below into bytes.
+  // I stored them as their values + 127 so as to not deal with signing, so get their values back:
+  static List<int> PST = PackedPST.SelectMany(BitConverter.GetBytes).Select(b => b - 127).ToList(),
+                   PieceValues = new() { 0, 100, 280, 320, 479, 929, 60000 };
+
+  static int infinity = 999999999,
+    maxDepth = 2;
+  
+  static Action<String> Print = Console.Out.WriteLine;
+  // Action<String> Print = (_) => {};
+  static void PrintIndent(int indent, string msg) {
+    Print(new String(' ', indent) + msg);
+  }
+
+  
+  public Move Think(Board board, Timer timer) {
+    Move decision = Move.NullMove;
+    int bestScore = -infinity;
+    foreach (var move in board.GetLegalMoves()) {
+      int score = negaMax(board, move, 0, 0);
+      if (score > bestScore) {
+        bestScore = score;
+        decision = move;
+      }
+    }
+    return decision;
+  }
+
+  static Dictionary<ulong, int> KnownScores = new();
+
+  // B/c my point algorithm returns *deltas*, not points, we need to keep a running accumulator
+  // of the overall change
+  int negaMax(Board board, Move move, int depth, int overallDelta) {
+    board.MakeMove(move);
+    ulong projectedZobrist = board.ZobristKey;
+    board.UndoMove(move);
+  
+    if (KnownScores.TryGetValue(projectedZobrist, out int known))
+      return known;
+    
+    int inherentScore = deltaPoints(move, board);
+    if (depth >= maxDepth)
+      return overallDelta + inherentScore;
+
+    // Check out what the opponent might do in response.
+    // We want to minimize their best response.
+    int theirBestGains = -infinity;
+    PrintIndent(depth, $"Determining score for {move.GetSAN(board)}, ply {board.PlyCount}, acc {overallDelta}");
+    PrintIndent(depth, $"Off the top of my head that's {inherentScore}");
+    board.MakeMove(move);
+    foreach (var theirResponse in board.GetLegalMoves()) {
+      PrintIndent(depth, $"> Checking their best score if they did {theirResponse.GetSAN(board)} ...");
+      // Because this is called recursively, we can assume by induction that
+      // this is their best possible case.
+      int theirScoreIfTheyDidThat = negaMax(board, theirResponse, depth + 1, overallDelta);
+      PrintIndent(depth, $"> The best they could do is {theirScoreIfTheyDidThat}");
+      if (theirScoreIfTheyDidThat > theirBestGains) {
+        // Sweet
+        PrintIndent(depth, $"> That's better than their previous best {theirBestGains} so they'll probably do it");
+        theirBestGains = theirScoreIfTheyDidThat;
+      }
+    }
+
+    board.UndoMove(move);
+    // and my score is the inverse of theirs.
+    int outScore = inherentScore + overallDelta - theirBestGains;
+    PrintIndent(depth, $"From this they can get {theirBestGains} max so my score is {outScore}.");
+
+    KnownScores[projectedZobrist] = outScore;
+    return outScore;
+  }
+
+  // Evaluate how good this would be for the current player.
+  static int deltaPoints(Move move, Board board) {
+    bool checkmate;
+    board.MakeMove(move); checkmate = board.IsInCheckmate(); board.UndoMove(move);
+    if (checkmate) {
+      return infinity;
+    }
+  
+    // Sunfish has the white pieces in uppercase.
+    int start = move.StartSquare.Index, end = move.TargetSquare.Index;
+    PieceType me = move.MovePieceType;
+
+    // The LUT always has *you* at the bottom, but Seb's has *white* at the bottom.
+    // So we need to do some reversing maybe.
+    int pstLookup(PieceType ty, int square) => PST[(int)(ty-1) * 64 +
+      (board.IsWhiteToMove
+        ? 63 - square
+        : square)];
+
+    // How many points we lose by leaving
+    int score = -pstLookup(move.MovePieceType, start);
+    // How many points we score by capturing that
+    score += PieceValues[(int)move.CapturePieceType];
+
+    // If we're not promoting, how many points we score at the target
+    if (move.PromotionPieceType == PieceType.None)
+      score += pstLookup(move.MovePieceType, end);
+    else // Otherwise, how many points we score as a *queen*
+      score += pstLookup(move.PromotionPieceType, end);
+
+    // Account for points scored by moving the rook
+    bool kingside = end > start;
+    if (move.IsCastles)
+      score += 
+        -pstLookup(PieceType.Rook, start + (kingside ? 3 : -4)) // Score lost by leaving here
+        + pstLookup(PieceType.Rook, end + (kingside ? -1 : 1)) // and gained by going there.
+        + 200; // it's like card advantage, doing More Things is always better
+
+    return score;
+  }
 }
