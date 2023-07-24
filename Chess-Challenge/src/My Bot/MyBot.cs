@@ -11,7 +11,8 @@ using static System.Math;
 // - https://github.com/thomasahle/sunfish/blob/master/sunfish.py
 // - https://zserge.com/posts/carnatus/
 public class MyBot : IChessBot {
-  Action<String> Print = Console.Out.WriteLine;
+  // Action<String> Print = Console.Out.WriteLine;
+  Action<String> Print = (_) => {};
   
   public Move Think(Board board, Timer timer) {
     var best = board.GetLegalMoves().MaxBy(move => EvaluateMove(move, board));
@@ -27,38 +28,41 @@ public class MyBot : IChessBot {
 
   int EvaluateMove(Move move, Board board) {
     Print($"Ply {board.PlyCount} : checking {move.GetSAN(board)}");
-    int score = GetProjectedMoveScore(move, board, 1);
+    int score = GetProjectedMoveScore(move, board, 3, -999999999, 999999999);
     Print($"  Projected score: {score}");
     return score;
   }
 
   // Projected score *if* I did this
-  int GetProjectedMoveScore(Move move, Board board, int depthLeft) {
+  int GetProjectedMoveScore(Move move, Board board, int depthLeft, int myWorst, int theirBest) {
     if (KnownScores.TryGetValue(board.ZobristKey, out int value)) {
       return value;
     }
   
     int baseScore = pointValue(move, board);
-    int responseScore  = 0;
 
     if (depthLeft > 0) {
-      Print($"Ply {board.PlyCount}. Checking what my opponent could do.");
+      Print($"Ply {board.PlyCount}. Attempting {move.GetSAN(board)}. Off the top of my head this is worth {baseScore} Checking what my opponent could do.");
       board.MakeMove(move);
       Move theirBestMove = Move.NullMove;
       foreach (var opponentsMove in board.GetLegalMoves()) {
         // Check from their perspective
-        int thisResponse = GetProjectedMoveScore(opponentsMove, board, depthLeft - 1);
+        int thisResponse = GetProjectedMoveScore(opponentsMove, board, depthLeft - 1, -theirBest, -myWorst);
+        if (thisResponse < theirBest) {
+          // They'd never ever search down here
+          break;
+        }
         // and we always assume they do the best for *them*.
-        if (thisResponse > responseScore) {
-          responseScore = thisResponse;
+        if (thisResponse > theirBest) {
+          theirBest = thisResponse;
           theirBestMove = opponentsMove;
         }
       }
+      Print($"Ply {board.PlyCount}. The opponent might get {theirBest} by {theirBestMove.GetSAN(board)}");
       board.UndoMove(move);
-      Print($"Ply {board.PlyCount}. The opponent might get {responseScore} by {theirBestMove}");
     }
       
-    int score = baseScore - responseScore;
+    int score = baseScore - theirBest;
     if (KnownScores.TryGetValue(board.ZobristKey, out int value2)) {
       if (score > value) {
         KnownScores[board.ZobristKey] = score;
@@ -83,7 +87,7 @@ public class MyBot : IChessBot {
     // So we need to do some reversing maybe.
     int pstLookup(PieceType ty, int square) => pst[(int)(ty-1) * 64 +
       (board.IsWhiteToMove
-        ? 64 - square
+        ? 63 - square
         : square)];
 
     // How many points we lose by leaving
